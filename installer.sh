@@ -137,10 +137,17 @@ install_binary() {
 update_shell_profile() {
     local install_path="$1"
     
-    # Check if the path is already in any shell profile
-    local profile_updated=false
-    local profile_files=("${HOME}/.profile" "${HOME}/.bashrc" "${HOME}/.zshrc" "${HOME}/.bash_profile")
+    # Check if the install directory is already in PATH
+    if echo "$PATH" | grep -q "${install_path}"; then
+        log_info "PATH already contains ${install_path}"
+        return 0
+    fi
     
+    # Profile files to check
+    local profile_files=("${HOME}/.profile" "${HOME}/.bashrc" "${HOME}/.zshrc" "${HOME}/.bash_profile")
+    local target_profile=""
+    
+    # Check if PATH is already configured in any existing profile
     for profile_file in "${profile_files[@]}"; do
         if [[ -f "${profile_file}" ]] && grep -q "export PATH.*${install_path}" "${profile_file}" 2>/dev/null; then
             log_info "PATH already configured in ${profile_file}"
@@ -148,19 +155,48 @@ update_shell_profile() {
         fi
     done
     
-    # Use ~/.profile as the universal choice (works for all login shells)
-    local target_profile="${HOME}/.profile"
+    # Find a writable profile file (skip managed/read-only files)
+    for profile_file in "${profile_files[@]}"; do
+        if [[ -f "${profile_file}" ]]; then
+            if [[ -w "${profile_file}" ]]; then
+                target_profile="${profile_file}"
+                break
+            else
+                # File exists but not writable - likely managed by home-manager or similar
+                continue
+            fi
+        else
+            # File doesn't exist - check if we can create it
+            local parent_dir="$(dirname "${profile_file}")"
+            if [[ -w "${parent_dir}" ]]; then
+                target_profile="${profile_file}"
+                break
+            fi
+        fi
+    done
     
-    # Add PATH export to the profile
+    # If no writable profile found, provide home-manager guidance
+    if [[ -z "${target_profile}" ]]; then
+        log_warning "No writable shell profile found - skipping PATH configuration"
+        echo ""
+        echo "The binary was installed to: ${HOME}/.local/bin/git-chai"
+        echo ""
+        echo "To use git-chai, add the following to your home-manager configuration:"
+        echo ""
+        echo "  home.sessionPath = [ \"\${HOME}/.local/bin\" ];"
+        echo ""
+        echo "Then rebuild your home-manager configuration."
+        return 0
+    fi
+    
+    # Add PATH export to the writable profile
     echo "export PATH=\"${install_path}:\$PATH\"" >> "${target_profile}"
     
     if [[ $? -eq 0 ]]; then
         log_success "Permanently added ${install_path} to PATH in ${target_profile}"
         log_info "The change will take effect after restarting your shell or running: source ${target_profile}"
-        profile_updated=true
     else
-        log_warning "Could not update ${target_profile}, you may need to add to PATH manually:"
-        echo "export PATH=\"${install_path}:\$PATH\""
+        log_warning "Could not update ${target_profile}"
     fi
 }
 
