@@ -10,8 +10,8 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # Configuration
-REPO_URL="https://github.com/chyna-gvng/git-chai"
-RAW_URL="https://raw.githubusercontent.com/chyna-gvng/git-chai/main"
+REPO_URL="https://github.com/wally-an/git-chai"
+RAW_URL="https://raw.githubusercontent.com/wally-an/git-chai/main"
 BINARY_NAME="git-chai"
 TEMP_DIR="$(mktemp -d)"
 
