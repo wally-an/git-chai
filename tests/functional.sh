@@ -32,6 +32,13 @@ count_commits(){ git -C "$1" rev-list --count HEAD; }
 
 GITC=(git -c user.name=ChaiTest -c user.email=chai@test.local)
 
+# Identity for every git process the *tool* spawns: the suite must pass on
+# machines with no user git config (e.g. GitHub runners), where git commit
+# would otherwise fail with "Author identity unknown". The -c flags above
+# only cover this script's own git calls.
+export GIT_AUTHOR_NAME=ChaiTest GIT_AUTHOR_EMAIL=chai@test.local
+export GIT_COMMITTER_NAME=ChaiTest GIT_COMMITTER_EMAIL=chai@test.local
+
 mkdir -p "$ROOT/remotes"
 cd "$ROOT"
 
