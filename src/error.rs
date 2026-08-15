@@ -1,15 +1,10 @@
 use thiserror::Error;
 
 #[derive(Debug, Error)]
-#[allow(clippy::enum_variant_names)]
+#[allow(clippy::enum_variant_names)] // Error suffix on every variant is deliberate
 pub enum GitChaiError {
     #[error("Git command failed: {command}: {stderr}")]
-    GitCommandError {
-        command: String,
-        stderr: String,
-        #[source]
-        source: Option<std::io::Error>,
-    },
+    GitCommandError { command: String, stderr: String },
 
     #[error("IO error: {0}")]
     IoError(#[from] std::io::Error),
@@ -23,19 +18,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_error_display() {
+    fn displays_errors() {
         let git_error = GitChaiError::GitCommandError {
-            command: "test".to_string(),
-            stderr: "error".to_string(),
-            source: None,
+            command: "git status".to_string(),
+            stderr: "fatal: not a git repository".to_string(),
         };
-        assert!(git_error.to_string().contains("Git command failed"));
+        assert_eq!(
+            git_error.to_string(),
+            "Git command failed: git status: fatal: not a git repository"
+        );
 
-        let io_error =
-            GitChaiError::IoError(std::io::Error::new(std::io::ErrorKind::Other, "test"));
+        let io_error = GitChaiError::IoError(std::io::Error::other("test"));
         assert!(io_error.to_string().contains("IO error"));
 
-        let parse_error = GitChaiError::ParseError("test".to_string());
-        assert!(parse_error.to_string().contains("Parse error"));
+        let parse_error = GitChaiError::ParseError("bad status".to_string());
+        assert_eq!(parse_error.to_string(), "Parse error: bad status");
     }
 }
