@@ -10,10 +10,13 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # Configuration
-REPO_URL="https://github.com/wally-an/git-chai"
-RAW_URL="https://raw.githubusercontent.com/wally-an/git-chai/main"
+REPO="wally-an/git-chai"
+REPO_URL="https://github.com/${REPO}"
+RAW_URL="https://raw.githubusercontent.com/${REPO}/main"
+TARBALL_URL="${REPO_URL}/archive/refs/heads/main.tar.gz"
 BINARY_NAME="git-chai"
 TEMP_DIR="$(mktemp -d)"
+SRC_DIR="${TEMP_DIR}/src"
 
 # Functions
 log_info() {
@@ -43,63 +46,50 @@ install_rust() {
         log_info "Rust already installed"
         return 0
     fi
-    
+
     log_info "Installing Rust..."
     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+    # shellcheck disable=SC1091
     source "${HOME}/.cargo/env"
-    
+
     # Set stable toolchain as default
     rustup default stable
     log_success "Rust installed successfully with stable toolchain"
 }
 
 download_source() {
-    local files=(
-        "src/git/commit.rs"
-        "src/git/grouping.rs"
-        "src/git/mod.rs"
-        "src/git/operations.rs"
-        "src/git/status.rs"
-        "src/config.rs"
-        "src/error.rs"
-        "src/main.rs"
-        "src/types.rs"
-        "Cargo.toml"
-        "Cargo.lock"
-    )
-    
-    log_info "Downloading source code..."
-    
-    mkdir -p "${TEMP_DIR}/src/git"
-    
-    for file in "${files[@]}"; do
-        local dir="$(dirname "${file}")"
-        mkdir -p "${TEMP_DIR}/${dir}"
-        curl -sSL "${RAW_URL}/${file}" -o "${TEMP_DIR}/${file}"
-    done
-    
+    log_info "Downloading source code from ${REPO_URL}..."
+
+    mkdir -p "${SRC_DIR}"
+    curl -sSL "${TARBALL_URL}" | tar xz --strip-components=1 -C "${SRC_DIR}"
+
+    if [[ ! -f "${SRC_DIR}/Cargo.toml" ]]; then
+        log_error "Download failed: Cargo.toml missing from ${TARBALL_URL}"
+        exit 1
+    fi
+
     log_success "Source code downloaded"
 }
 
 build_binary() {
     log_info "Building binary..."
-    
-    cd "${TEMP_DIR}"
+
+    cd "${SRC_DIR}"
     cargo build --release
-    
+
     if [[ ! -f "target/release/${BINARY_NAME}" ]]; then
         log_error "Build failed - binary not found"
         exit 1
     fi
-    
+
     log_success "Binary built successfully"
 }
 
 install_binary() {
     local install_path=""
-    
+
     # Try system locations first, then user directories
-    if command -v sudo >/dev/null 2>&1 && [[ -w "/usr/local/bin" ]] || sudo -n true 2>/dev/null; then
+    if command -v sudo >/dev/null 2>&1 && { [[ -w "/usr/local/bin" ]] || sudo -n true 2>/dev/null; }; then
         install_path="/usr/local/bin"
     elif [[ -w "${HOME}/.local/bin" ]]; then
         install_path="${HOME}/.local/bin"
@@ -115,9 +105,9 @@ install_binary() {
         install_path="${HOME}/.local/bin"
         mkdir -p "${install_path}"
     fi
-    
+
     local final_path="${install_path}/${BINARY_NAME}"
-    
+
     if [[ "${install_path}" == "/usr/local/bin" ]]; then
         sudo cp "target/release/${BINARY_NAME}" "${final_path}"
         sudo chmod +x "${final_path}"
@@ -125,9 +115,9 @@ install_binary() {
         cp "target/release/${BINARY_NAME}" "${final_path}"
         chmod +x "${final_path}"
     fi
-    
+
     log_success "Installed to ${final_path}"
-    
+
     # For user directories, permanently update shell profile
     if [[ "${install_path}" != "/usr/local/bin" ]]; then
         update_shell_profile "${install_path}"
@@ -136,17 +126,17 @@ install_binary() {
 
 update_shell_profile() {
     local install_path="$1"
-    
+
     # Check if the install directory is already in PATH
     if echo "$PATH" | grep -q "${install_path}"; then
         log_info "PATH already contains ${install_path}"
         return 0
     fi
-    
+
     # Profile files to check
     local profile_files=("${HOME}/.profile" "${HOME}/.bashrc" "${HOME}/.zshrc" "${HOME}/.bash_profile")
     local target_profile=""
-    
+
     # Check if PATH is already configured in any existing profile
     for profile_file in "${profile_files[@]}"; do
         if [[ -f "${profile_file}" ]] && grep -q "export PATH.*${install_path}" "${profile_file}" 2>/dev/null; then
@@ -154,7 +144,7 @@ update_shell_profile() {
             return 0
         fi
     done
-    
+
     # Find a writable profile file (skip managed/read-only files)
     for profile_file in "${profile_files[@]}"; do
         if [[ -f "${profile_file}" ]]; then
@@ -167,14 +157,15 @@ update_shell_profile() {
             fi
         else
             # File doesn't exist - check if we can create it
-            local parent_dir="$(dirname "${profile_file}")"
+            local parent_dir
+            parent_dir="$(dirname "${profile_file}")"
             if [[ -w "${parent_dir}" ]]; then
                 target_profile="${profile_file}"
                 break
             fi
         fi
     done
-    
+
     # If no writable profile found, provide home-manager guidance
     if [[ -z "${target_profile}" ]]; then
         log_warning "No writable shell profile found - skipping PATH configuration"
@@ -188,11 +179,9 @@ update_shell_profile() {
         echo "Then rebuild your home-manager configuration."
         return 0
     fi
-    
+
     # Add PATH export to the writable profile
-    echo "export PATH=\"${install_path}:\$PATH\"" >> "${target_profile}"
-    
-    if [[ $? -eq 0 ]]; then
+    if echo "export PATH=\"${install_path}:\$PATH\"" >> "${target_profile}"; then
         log_success "Permanently added ${install_path} to PATH in ${target_profile}"
         log_info "The change will take effect after restarting your shell or running: source ${target_profile}"
     else
@@ -212,30 +201,35 @@ verify_installation() {
 
 main() {
     trap cleanup EXIT
-    
+
     log_info "Installing ${BINARY_NAME}..."
-    
+
     # Check dependencies
     if ! command -v curl >/dev/null 2>&1; then
         log_error "curl is required but not installed"
         exit 1
     fi
-    
+
+    if ! command -v tar >/dev/null 2>&1; then
+        log_error "tar is required but not installed"
+        exit 1
+    fi
+
     if ! command -v cargo >/dev/null 2>&1; then
         install_rust
     fi
-    
+
     download_source
     build_binary
     install_binary
     verify_installation
-    
+
     log_success "${BINARY_NAME} installed successfully!"
 }
 
 # Handle help option
 if [[ "${1:-}" == "--help" ]] || [[ "${1:-}" == "-h" ]]; then
-    echo "Install ${BINARY_NAME} from source"
+    echo "Install ${BINARY_NAME} from source (${REPO_URL})"
     echo "Usage: curl -sSL ${RAW_URL}/installer.sh | bash"
     exit 0
 fi
