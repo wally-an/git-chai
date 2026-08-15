@@ -6,8 +6,15 @@ the code.
 
 ## Commands
 
-cargo build | cargo test | cargo clippy --all-targets -- -D warnings | cargo fmt --check
-nix build | nix run .# -- --version | nix flake check   # sandbox verification
+```bash
+cargo build                          # build
+cargo test                           # unit + integration tests
+cargo clippy --all-targets -- -D warnings
+cargo fmt --check
+nix build                            # flake package; runs cargo test in the sandbox
+nix run .# -- --version              # runs the flake-built binary
+nix flake check
+```
 
 ## Architecture
 
