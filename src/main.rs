@@ -1,17 +1,16 @@
-mod config;
 mod error;
 mod git;
 mod types;
 
-use crate::config::Config;
-use crate::git::{
-    ChangeGroup, create_commit_for_directory, create_commit_for_file, get_changed_files,
-    group_changes_by_directory, push_changes, stage_directory, stage_file,
-};
 use anyhow::Result;
 use clap::Parser;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+use crate::git::{
+    ChangeGroup, commit_paths, directory_commit_message, file_commit_message, get_changed_files,
+    group_changes_by_directory, push_changes,
+};
 
 #[derive(Parser, Debug)]
 #[command(about, long_about = None, disable_version_flag = true)]
@@ -41,186 +40,133 @@ struct Args {
     version: bool,
 }
 
-fn process_changes(config: &Config, dry_run: bool, push: bool, verbose: bool) -> Result<()> {
-    log::info!("Scanning for changes in {:?}...", config.repo_path);
+fn process_changes(repo_path: &Path, dry_run: bool, push: bool) -> Result<()> {
+    log::info!("Scanning for changes in {:?}...", repo_path);
 
-    let changes = match get_changed_files(&config.repo_path) {
-        Ok(changes) => {
-            if changes.is_empty() {
-                log::info!("No changes detected");
-                return Ok(());
-            }
-            changes
-        }
-        Err(e) => {
-            log::error!("Failed to scan for changes: {}", e);
-            std::process::exit(1);
-        }
-    };
+    let changes = get_changed_files(repo_path)?;
+    if changes.is_empty() {
+        log::info!("No changes detected");
+        return Ok(());
+    }
 
-    let change_groups = match group_changes_by_directory(&config.repo_path, &changes) {
-        Ok(groups) => groups,
-        Err(e) => {
-            log::error!("Failed to group changes by directory: {}", e);
-            changes
-                .iter()
-                .map(|change| ChangeGroup {
-                    path: PathBuf::from("."),
-                    change_type: "individual".to_string(),
-                    files: vec![change.filename.clone()],
-                    file_change_types: Some(vec![change.change_type.to_string()]),
-                })
-                .collect()
-        }
-    };
+    let groups = group_changes_by_directory(repo_path, changes)?;
 
-    for group in change_groups {
-        if dry_run {
-            if verbose {
-                log::info!(
-                    "DRY RUN: Would process group - Type: {}, Path: {}, Files: {:?}",
-                    group.change_type,
-                    group.path.display(),
-                    group.files
-                );
-                if let Some(ref change_types) = group.file_change_types {
-                    log::info!("DRY RUN: Change types: {:?}", change_types);
-                }
-            } else {
-                log::info!(
-                    "DRY RUN: Would process {} files in {}: {}",
-                    group.files.len(),
-                    group.change_type,
-                    group.path.display()
-                );
-            }
-            continue;
-        }
+    let mut committed = 0usize;
+    let mut failed = 0usize;
+    let mut planned = 0usize;
 
-        if group.change_type != "individual" && group.change_type != "mixed" {
-            if verbose {
-                log::info!(
-                    "Processing directory: {}: {} (would stage all files and commit)",
-                    group.change_type,
-                    group.path.display()
-                );
-            } else {
-                log::info!(
-                    "Processing directory: {}: {}",
-                    group.change_type,
-                    group.path.display()
-                );
-            }
-
-            if let Err(e) = stage_directory(&config.repo_path, &group.path) {
-                log::error!("Failed to stage directory {}: {}", group.path.display(), e);
-                continue;
-            }
-
-            if let Err(e) =
-                create_commit_for_directory(&config.repo_path, &group.path, &group.change_type)
-            {
-                log::error!(
-                    "Failed to create commit for directory {}: {}",
-                    group.path.display(),
-                    e
-                );
-                continue;
-            }
-
-            if verbose {
-                log::info!(
-                    "Committed directory: {}: {} (commit message: '{}: {}')",
-                    group.change_type,
-                    group.path.display(),
-                    group.change_type,
-                    group
-                        .path
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or("directory")
-                );
-            } else {
-                log::info!(
-                    "Committed directory: {}: {}",
-                    group.change_type,
-                    group.path.display()
-                );
-            }
-        } else {
-            for (i, file_entry) in group.files.iter().enumerate() {
-                let clean_filename = file_entry;
-
-                let change_type = if let Some(ref change_types) = group.file_change_types {
-                    if i < change_types.len() {
-                        &change_types[i]
-                    } else {
-                        if clean_filename.ends_with("/") {
-                            "add"
-                        } else {
-                            "mod"
+    for group in &groups {
+        match group {
+            ChangeGroup::Directory {
+                path,
+                change_type,
+                files,
+            } => {
+                let message = directory_commit_message(path, *change_type);
+                planned += 1;
+                if dry_run {
+                    log::info!(
+                        "DRY RUN: would commit {} file(s) in {} as '{}'",
+                        files.len(),
+                        path.display(),
+                        message
+                    );
+                    if log::log_enabled!(log::Level::Debug) {
+                        for file in files {
+                            log::debug!("DRY RUN:   {}", file.filename.display());
                         }
                     }
-                } else {
-                    "mod"
-                };
-
-                if verbose {
-                    log::info!(
-                        "Processing: {}: {} (would stage and commit)",
-                        change_type,
-                        clean_filename
-                    );
-                } else {
-                    log::info!("Processing: {}: {}", change_type, clean_filename);
-                }
-
-                if let Err(e) = stage_file(&config.repo_path, clean_filename) {
-                    log::error!("Failed to stage file {}: {}", clean_filename, e);
                     continue;
                 }
-
-                if let Err(e) =
-                    create_commit_for_file(&config.repo_path, clean_filename, change_type)
-                {
-                    log::error!("Failed to create commit for {}: {}", clean_filename, e);
-                    continue;
+                // Stage the exact changed files rather than the whole
+                // directory: files created after the scan must not be
+                // swept into this commit. For untracked directories the
+                // entry is the directory itself ("newpkg/").
+                let paths: Vec<PathBuf> = files.iter().map(|f| f.filename.clone()).collect();
+                match commit_paths(repo_path, &paths, &message) {
+                    Ok(()) => {
+                        committed += 1;
+                        log::info!("Committed {}: {}", change_type, path.display());
+                        if log::log_enabled!(log::Level::Debug) {
+                            for file in files {
+                                log::debug!("  {}", file.filename.display());
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        failed += 1;
+                        log::error!("Failed to commit {}: {}", path.display(), e);
+                    }
                 }
-
-                if verbose {
-                    log::info!(
-                        "Committed: {}: {} (commit message: '{}: {}')",
-                        change_type,
-                        clean_filename,
-                        change_type,
-                        clean_filename
-                    );
-                } else {
-                    log::info!("Committed: {}: {}", change_type, clean_filename);
+            }
+            ChangeGroup::Individual { files } => {
+                for file in files {
+                    let message = file_commit_message(file);
+                    planned += 1;
+                    if dry_run {
+                        log::info!("DRY RUN: would commit '{}'", message);
+                        continue;
+                    }
+                    let mut paths = Vec::with_capacity(2);
+                    if let Some(old) = &file.old_filename {
+                        paths.push(old.clone());
+                    }
+                    paths.push(file.filename.clone());
+                    match commit_paths(repo_path, &paths, &message) {
+                        Ok(()) => {
+                            committed += 1;
+                            log::info!("Committed {}", message);
+                        }
+                        Err(e) => {
+                            failed += 1;
+                            log::error!("Failed to commit {}: {}", file.filename.display(), e);
+                        }
+                    }
                 }
             }
         }
     }
 
-    log::info!("Successfully committed all changes!");
-
-    if push && !dry_run {
-        if let Err(e) = push_changes(&config.repo_path) {
-            log::warn!("Failed to push changes: {}", e);
-            log::warn!("Changes were committed locally but not pushed to remote.");
-        } else {
-            log::info!("Successfully pushed changes to remote!");
+    if dry_run {
+        log::info!(
+            "DRY RUN: no changes were committed ({} change(s) would have been committed)",
+            planned
+        );
+        if push {
+            log::info!("DRY RUN: would push changes to remote");
         }
-    } else if push && dry_run {
-        log::info!("DRY RUN: Would push changes to remote");
+        return Ok(());
+    }
+
+    if failed > 0 {
+        let message = format!("{} of {} change(s) failed to commit", failed, planned);
+        log::error!("{}", message);
+        return Err(anyhow::anyhow!(message));
+    }
+
+    if committed == 0 {
+        log::info!("No changes to commit");
+        return Ok(());
+    }
+
+    log::info!("Successfully committed {} change(s)", committed);
+
+    if push {
+        match push_changes(repo_path) {
+            Ok(()) => log::info!("Successfully pushed changes to remote!"),
+            Err(e) => {
+                log::warn!("Failed to push changes: {}", e);
+                log::warn!("Changes were committed locally but not pushed to remote.");
+            }
+        }
     } else {
-        log::info!("Skipping push (--no-push specified)");
+        log::info!("Skipping push");
     }
 
     Ok(())
 }
 
-fn resolve_repo_toplevel(path: &Path) -> anyhow::Result<PathBuf> {
+fn resolve_repo_toplevel(path: &Path) -> Result<PathBuf> {
     let output = Command::new("git")
         .current_dir(path)
         .arg("rev-parse")
@@ -242,38 +188,23 @@ fn resolve_repo_toplevel(path: &Path) -> anyhow::Result<PathBuf> {
 fn main() -> Result<()> {
     let args = Args::parse();
 
-    unsafe {
-        if args.verbose {
-            std::env::set_var("RUST_LOG", "debug");
-        } else {
-            std::env::set_var("RUST_LOG", "info");
-        }
-    }
-    env_logger::init();
+    env_logger::Builder::from_env(
+        env_logger::Env::default().default_filter_or(if args.verbose { "debug" } else { "info" }),
+    )
+    .init();
 
     if args.version {
-        println!("git-chai 0.1.0");
+        println!("git-chai {}", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
 
-    let repo_root = match resolve_repo_toplevel(&args.repo_path) {
-        Ok(p) => p,
-        Err(e) => {
-            log::error!(
-                "Failed to resolve git repo top-level for {:?}: {}",
-                args.repo_path,
-                e
-            );
-            std::process::exit(1);
-        }
-    };
-
-    let config = Config {
-        repo_path: repo_root,
-        push_by_default: args.push,
-        commit_message_template: "{change_type}: {name}".to_string(),
-        min_files_for_directory_commit: 2,
-    };
+    let repo_root = resolve_repo_toplevel(&args.repo_path).map_err(|e| {
+        anyhow::anyhow!(
+            "Failed to resolve git repo top-level for {:?}: {}",
+            args.repo_path,
+            e
+        )
+    })?;
 
     if args.headless {
         use std::thread;
@@ -290,7 +221,7 @@ fn main() -> Result<()> {
         log::info!("git-chai: Starting in headless mode. Press Ctrl+C to stop.");
 
         while running.load(std::sync::atomic::Ordering::SeqCst) {
-            if let Err(e) = process_changes(&config, args.dry_run, args.push, args.verbose) {
+            if let Err(e) = process_changes(&repo_root, args.dry_run, args.push) {
                 log::error!("Error processing changes: {}", e);
             }
 
@@ -307,6 +238,6 @@ fn main() -> Result<()> {
         Ok(())
     } else {
         log::info!("git-chai: Running once");
-        process_changes(&config, args.dry_run, args.push, args.verbose)
+        process_changes(&repo_root, args.dry_run, args.push)
     }
 }
