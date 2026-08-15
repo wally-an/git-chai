@@ -18,14 +18,21 @@ nix flake check
 
 ## Architecture
 
-main.rs           CLI (clap) + orchestration loop; headless poller
+main.rs           CLI (clap) + orchestration; headless poller
 git/mod.rs        the only module that shells out to git
-git/status.rs     porcelain -z scan -> Vec<GitChange>
+git/status.rs     status scan -> Vec<GitChange>
 git/grouping.rs   Vec<GitChange> -> Vec<ChangeGroup>, deterministic
-git/commit.rs     isolated commit per group, push, messages
+git/commit.rs     commits, push, message building
 types.rs, error.rs
 
-Data flow: scan -> group -> commit -> optional push.
+Data flow, with the git commands each stage runs:
+
+scan     git status --porcelain=v1 -z; git ls-files -u (conflicts)
+group    per-directory classification; ls-files + --others decides
+         directory commits
+commit   throwaway index: read-tree HEAD, add --all -- <paths>, commit;
+         then git reset -- <paths> syncs the real index
+push     git push origin HEAD
 
 ## Invariants (do not "fix" these)
 
