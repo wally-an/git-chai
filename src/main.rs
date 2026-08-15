@@ -185,13 +185,21 @@ fn resolve_repo_toplevel(path: &Path) -> Result<PathBuf> {
     Ok(PathBuf::from(toplevel))
 }
 
+fn init_logging(verbose: bool) {
+    // An empty RUST_LOG (e.g. exported by build sandboxes) would silently
+    // mute all output; treat it as unset and use the default filter.
+    let default = if verbose { "debug" } else { "info" };
+    let filter = std::env::var("RUST_LOG")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| default.to_string());
+    env_logger::Builder::new().parse_filters(&filter).init();
+}
+
 fn main() -> Result<()> {
     let args = Args::parse();
 
-    env_logger::Builder::from_env(
-        env_logger::Env::default().default_filter_or(if args.verbose { "debug" } else { "info" }),
-    )
-    .init();
+    init_logging(args.verbose);
 
     if args.version {
         println!("git-chai {}", env!("CARGO_PKG_VERSION"));
