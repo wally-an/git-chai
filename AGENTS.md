@@ -18,6 +18,7 @@ nix flake check
 
 ## Architecture
 
+```text
 main.rs           CLI (clap) + orchestration; headless poller
 git/mod.rs        the only module that shells out to git
 git/status.rs     status scan -> Vec<GitChange>
@@ -33,6 +34,7 @@ group    per-directory classification; ls-files + --others decides
 commit   throwaway index: read-tree HEAD, add --all -- <paths>, commit;
          then git reset -- <paths> syncs the real index
 push     git push origin HEAD
+```
 
 ## Invariants (do not "fix" these)
 
