@@ -7,6 +7,7 @@
     let
       systems = [ "x86_64-linux" "aarch64-linux" ];
       forAllSystems = nixpkgs.lib.genAttrs systems;
+      version = (builtins.fromTOML (builtins.readFile ./Cargo.toml)).package.version;
     in
     {
       packages = forAllSystems (system:
@@ -15,10 +16,29 @@
         {
           default = pkgs.rustPlatform.buildRustPackage {
             pname = "git-chai";
-            version = "0.1.0";
+            inherit version;
             src = self;
             cargoLock.lockFile = ./Cargo.lock;
+            doCheck = true;
+            # Integration tests spawn git and the built binary.
+            nativeCheckInputs = [ pkgs.git ];
             meta.mainProgram = "git-chai";
+          };
+        });
+
+      devShells = forAllSystems (system:
+        let pkgs = nixpkgs.legacyPackages.${system};
+        in
+        {
+          default = pkgs.mkShell {
+            packages = with pkgs; [
+              cargo
+              rustc
+              clippy
+              rustfmt
+              nixfmt
+              git
+            ];
           };
         });
     };
